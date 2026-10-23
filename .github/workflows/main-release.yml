@@ -116,26 +116,41 @@ jobs:
             > dists/stable/Release
 
       - name: Sign APT repository
+        env:
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
         run: |
           cd site/apt
 
           KEY_ID=$(gpg --list-secret-keys \
             --with-colons | awk -F: '/^sec:/ {print $5; exit}')
 
-          gpg --batch --yes \
+          echo "Using GPG key: $KEY_ID"
+
+          gpg \
+            --batch \
+            --yes \
+            --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
             --default-key "$KEY_ID" \
             --armor \
             --detach-sign \
             -o dists/stable/Release.gpg \
             dists/stable/Release
 
-          gpg --batch --yes \
+          gpg \
+            --batch \
+            --yes \
+            --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
             --default-key "$KEY_ID" \
             --clearsign \
             -o dists/stable/InRelease \
             dists/stable/Release
 
-          gpg --armor \
+          gpg \
+            --batch \
+            --yes \
+            --armor \
             --export "$KEY_ID" \
             > pathvector-apiku.asc
 
