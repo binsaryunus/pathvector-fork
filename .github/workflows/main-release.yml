@@ -1,4 +1,4 @@
-name: Build Pathvector
+name: Build Pathvector DEB
 
 on:
   workflow_dispatch:
@@ -24,17 +24,37 @@ jobs:
         with:
           go-version: "1.22.x"
 
-      - name: Show Go version
-        run: go version
+      - name: Build binary
+        run: |
+          go mod verify
+          go build -v -o pathvector .
 
-      - name: Verify modules
-        run: go mod verify
+      - name: Prepare DEB structure
+        run: |
+          VERSION="6.3.2-apiku1"
 
-      - name: Build
-        run: go build -v -o pathvector .
+          mkdir -p package/DEBIAN
+          mkdir -p package/usr/local/bin
 
-      - name: Upload binary
+          cp pathvector package/usr/local/bin/pathvector
+          chmod +x package/usr/local/bin/pathvector
+
+          cat > package/DEBIAN/control <<EOF
+          Package: pathvector
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Apiku
+          Description: Pathvector BGP configuration tool
+          EOF
+
+      - name: Build DEB
+        run: |
+          dpkg-deb --build package pathvector_6.3.2-apiku1_amd64.deb
+
+      - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
-          name: pathvector-linux-amd64
-          path: pathvector
+          name: pathvector-deb
+          path: pathvector_6.3.2-apiku1_amd64.deb
