@@ -1,4 +1,4 @@
-name: Build Pathvector
+name: Build & Publish Pathvector APT
 
 on:
   workflow_dispatch:
@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build:
@@ -24,15 +26,10 @@ jobs:
         with:
           go-version: "1.22.x"
 
-      - name: Show Go version
-        run: go version
-
-      - name: Verify modules
-        run: go mod verify
-
-      - name: Build binary
+      - name: Install packaging tools
         run: |
-          go build -v -o pathvector .
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev gnupg
 
       - name: Set version
         id: version
@@ -49,13 +46,16 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_deb=$VERSION_DEB" >> "$GITHUB_OUTPUT"
 
-          echo "Build version: $VERSION"
-          echo "Debian version: $VERSION_DEB"
+      - name: Verify modules
+        run: go mod verify
 
-      - name: Prepare DEB package
+      - name: Build binary
+        run: |
+          go build -v -o pathvector .
+
+      - name: Prepare DEB
         run: |
           rm -rf package
-
           mkdir -p package/DEBIAN
           mkdir -p package/usr/local/bin
 
@@ -72,10 +72,6 @@ jobs:
           Description: Pathvector BGP configuration tool
           EOF
 
-      - name: Show DEB control
-        run: |
-          cat package/DEBIAN/control
-
       - name: Build DEB
         run: |
           dpkg-deb --build \
@@ -84,14 +80,81 @@ jobs:
 
       - name: Generate checksums
         run: |
-          sha256sum pathvector \
-            > pathvector.sha256
+          sha256sum pathvector > pathvector.sha256
 
           sha256sum \
             pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb \
             > pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb.sha256
 
-      - name: Upload workflow artifacts
+      - name: Import APT signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Build APT repository
+        run: |
+          mkdir -p site/apt/pool/main/p/pathvector
+          mkdir -p site/apt/dists/stable/main/binary-amd64
+
+          cp \
+            pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb \
+            site/apt/pool/main/p/pathvector/
+
+          cd site/apt
+
+          dpkg-scanpackages \
+            --arch amd64 \
+            pool/ \
+            > dists/stable/main/binary-amd64/Packages
+
+          gzip -k -f \
+            dists/stable/main/binary-amd64/Packages
+
+          apt-ftparchive release \
+            dists/stable \
+            > dists/stable/Release
+
+      - name: Sign APT repository
+        run: |
+          cd site/apt
+
+          KEY_ID=$(gpg --list-secret-keys \
+            --with-colons | awk -F: '/^sec:/ {print $5; exit}')
+
+          gpg --batch --yes \
+            --default-key "$KEY_ID" \
+            --armor \
+            --detach-sign \
+            -o dists/stable/Release.gpg \
+            dists/stable/Release
+
+          gpg --batch --yes \
+            --default-key "$KEY_ID" \
+            --clearsign \
+            -o dists/stable/InRelease \
+            dists/stable/Release
+
+          gpg --armor \
+            --export "$KEY_ID" \
+            > pathvector-apiku.asc
+
+      - name: Create index page
+        run: |
+          cat > site/index.html <<EOF
+          <!doctype html>
+          <html>
+          <head>
+            <title>Apiku Pathvector Repository</title>
+          </head>
+          <body>
+            <h1>Apiku Pathvector APT Repository</h1>
+            <p>Version: ${{ steps.version.outputs.version }}</p>
+          </body>
+          </html>
+          EOF
+
+      - name: Upload normal artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pathvector-${{ steps.version.outputs.version }}
@@ -111,3 +174,29 @@ jobs:
             pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb
             pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb.sha256
           generate_release_notes: true
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy APT repo
+        id: deployment
+        uses: actions/deploy-pages@v4
