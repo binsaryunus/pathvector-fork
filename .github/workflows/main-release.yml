@@ -1,4 +1,4 @@
-name: Build Pathvector DEB
+name: Build Pathvector
 
 on:
   workflow_dispatch:
@@ -24,15 +24,30 @@ jobs:
         with:
           go-version: "1.22.x"
 
+      - name: Verify modules
+        run: go mod verify
+
       - name: Build binary
         run: |
-          go mod verify
           go build -v -o pathvector .
 
-      - name: Prepare DEB structure
+      - name: Set version
+        id: version
+        shell: bash
         run: |
-          VERSION="6.3.2-apiku1"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_RUN_NUMBER}"
+          fi
 
+          VERSION_DEB="$(echo "$VERSION" | sed 's/-/~/g')"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_deb=$VERSION_DEB" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare DEB package
+        run: |
           mkdir -p package/DEBIAN
           mkdir -p package/usr/local/bin
 
@@ -41,7 +56,7 @@ jobs:
 
           cat > package/DEBIAN/control <<EOF
           Package: pathvector
-          Version: ${VERSION}
+          Version: ${{ steps.version.outputs.version_deb }}
           Section: net
           Priority: optional
           Architecture: amd64
@@ -51,10 +66,32 @@ jobs:
 
       - name: Build DEB
         run: |
-          dpkg-deb --build package pathvector_6.3.2-apiku1_amd64.deb
+          dpkg-deb --build package \
+            pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb
 
-      - name: Upload DEB
+      - name: Generate checksum
+        run: |
+          sha256sum pathvector > pathvector.sha256
+          sha256sum pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb \
+            > pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb.sha256
+
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: pathvector-deb
-          path: pathvector_6.3.2-apiku1_amd64.deb
+          name: pathvector-${{ steps.version.outputs.version }}
+          path: |
+            pathvector
+            pathvector.sha256
+            pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb
+            pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb.sha256
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pathvector
+            pathvector.sha256
+            pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb
+            pathvector_${{ steps.version.outputs.version_deb }}_amd64.deb.sha256
+          generate_release_notes: true
